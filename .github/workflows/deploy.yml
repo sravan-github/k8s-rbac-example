@@ -1,0 +1,65 @@
+name: Deploy to Docker Desktop Kubernetes
+
+# Docker Desktop's cluster runs on your own machine, so GitHub-hosted runners
+# cannot reach it. This job needs a self-hosted runner installed on the same
+# Windows machine as Docker Desktop (Repo -> Settings -> Actions -> Runners).
+# Treat k8s-rbac-example/ as the repository root; if it is a subfolder of a
+# bigger repo, move .github/ to the repo root and prefix the paths below.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - rbac.yaml
+      - deployment.yaml
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, windows]
+    env:
+      KUBE_CONTEXT: docker-desktop
+      NAMESPACE: dev
+      SA: system:serviceaccount:dev:dev-user
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use docker-desktop context
+        shell: pwsh
+        run: |
+          kubectl config use-context $env:KUBE_CONTEXT
+          kubectl get nodes
+
+      - name: Apply RBAC (namespace, ServiceAccount, Role, bindings)
+        shell: pwsh
+        run: kubectl apply -f rbac.yaml
+
+      - name: Apply Deployment
+        shell: pwsh
+        run: kubectl apply -f deployment.yaml
+
+      - name: Wait for rollout
+        shell: pwsh
+        run: kubectl rollout status deployment/web -n $env:NAMESPACE --timeout=120s
+
+      - name: Verify RBAC permissions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          function Check($expected, $args_) {
+            # can-i exits 1 on "no", so compare output text instead of exit code
+            $result = (kubectl auth can-i @args_ --as $env:SA | Out-String).Trim()
+            Write-Host "can-i $args_ => $result (expected $expected)"
+            if ($result -ne $expected) { throw "RBAC check failed: $args_" }
+          }
+          Check "yes" @("list", "pods", "-n", $env:NAMESPACE)
+          Check "yes" @("create", "deployments", "-n", $env:NAMESPACE)
+          Check "no"  @("delete", "pods", "-n", $env:NAMESPACE)
+          Check "no"  @("list", "pods", "-n", "default")
+          Check "yes" @("list", "nodes")
+
+      - name: Show resources
+        if: always()
+        shell: pwsh
+        run: kubectl get sa,role,rolebinding,deploy,pods -n $env:NAMESPACE

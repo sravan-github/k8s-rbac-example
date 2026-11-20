@@ -1,0 +1,50 @@
+name: Deploy to kind (GitHub-hosted)
+
+# Runs entirely on GitHub's runners: creates a throwaway kind cluster,
+# applies the manifests, and verifies RBAC. No self-hosted runner needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NAMESPACE: dev
+      SA: system:serviceaccount:dev:dev-user
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+
+      - name: Apply RBAC (namespace, ServiceAccount, Role, bindings)
+        run: kubectl apply -f rbac.yaml
+
+      - name: Apply Deployment
+        run: kubectl apply -f deployment.yaml
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/web -n "$NAMESPACE" --timeout=120s
+
+      - name: Verify RBAC permissions
+        run: |
+          check() {
+            expected=$1; shift
+            # can-i exits 1 on "no", so ignore the exit code and compare the output
+            result=$(kubectl auth can-i "$@" --as "$SA" || true)
+            echo "can-i $* => $result (expected $expected)"
+            [ "$result" = "$expected" ] || { echo "RBAC check failed: $*"; exit 1; }
+          }
+          check yes list pods -n "$NAMESPACE"
+          check yes create deployments -n "$NAMESPACE"
+          check no  delete pods -n "$NAMESPACE"
+          check no  list pods -n default
+          check yes list nodes
+
+      - name: Show resources
+        if: always()
+        run: kubectl get sa,role,rolebinding,deploy,pods -n "$NAMESPACE"
