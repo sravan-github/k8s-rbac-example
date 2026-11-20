@@ -1,0 +1,39 @@
+# Equivalent of:
+#   kubectl create deployment web --image=nginx -n dev --as $sa
+# where $sa = "system:serviceaccount:dev:dev-user"
+#
+# The manifest defines: name (web), --image (nginx), -n (namespace: dev).
+# "--as" (impersonation) is a kubectl flag, not part of the manifest, so run:
+#   kubectl create -f deployment.yaml --as system:serviceaccount:dev:dev-user
+#
+# NOTE: this file also defines the ServiceAccount "dev-user" (same as rbac.yaml).
+# dev-user cannot create ServiceAccounts, so apply this file as cluster admin
+# (without --as), or apply rbac.yaml first and skip the ServiceAccount here.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dev-user
+  namespace: dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: dev
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      serviceAccountName: dev-user
+      containers:
+        - name: nginx
+          image: nginx
